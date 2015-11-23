@@ -7,6 +7,7 @@ public class PlayerMoveControl : MonoBehaviour
 {
   private PlayerCharacterController m_CharacterController;
   private bool m_JumpedThisUpdate;
+  private bool m_hugWall;
 
   private void Awake()
   {
@@ -33,7 +34,10 @@ public class PlayerMoveControl : MonoBehaviour
     // If on keyboard, holding diagonal will create a vector of magnitude > 1, so clamp
     moveDir = Vector2.ClampMagnitude( moveDir, 1f );
 
-    m_CharacterController.Move( moveDir, m_JumpedThisUpdate );
+    float hugWallRaw = Input.GetAxis( "HugWall" );
+    m_hugWall = hugWallRaw > 0f;
+
+    m_CharacterController.Move( moveDir, m_hugWall );
     m_JumpedThisUpdate = false;
   }
 }
