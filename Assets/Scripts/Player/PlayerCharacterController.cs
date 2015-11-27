@@ -15,8 +15,14 @@ public class PlayerCharacterController : MonoBehaviour
   [SerializeField] private AnimationCurve m_reverseDirectionAngleScalar;
   [SerializeField] private AnimationCurve m_wallSlideInputScalar; // adjustment to input magnitude based on dot product to wall
                                                                   // line when hugging wall
+  [SerializeField] private AnimationCurve m_VelocityScalarAfterWallKickoff;
   [SerializeField] private float m_wallHugOffset; // How close to a wall do we snap when hugging?
   [SerializeField] private float m_touchingWallRadius; // Size of collider to touch walls
+  [SerializeField] private Vector2 m_leftFootRelativePos; // Location (local space) from which to raycast down to see if foot is
+                                         // off the edge of our current wall.
+                                         // Right foot is inverse x of this
+  [SerializeField] private float m_maxSlopeAdjustDistance; // Distance to cast from our feet position to find a new slope
+                                                           // If the floor is farther than this, we won't move any further
   [SerializeField] private bool m_debug; // Enable debug logging, drawing?
 
   private bool m_TouchingWall;              // Whether or not player is touching environment. Updated every frame
@@ -24,6 +30,7 @@ public class PlayerCharacterController : MonoBehaviour
   private Rigidbody2D m_Rigidbody2D;
   private RaycastHit2D[] m_WallsCollided = new RaycastHit2D[k_maxNumberOfWallCollisions];
   private float m_lastTimeSwitchedWalls;
+  private float m_lastTimeKickedOffWall;
 
   private Collider2D m_formerCollider;
 
@@ -74,7 +81,7 @@ public class PlayerCharacterController : MonoBehaviour
   /// to allow the same character controller to be used by AIs and Players
   /// </summary>
   /// <param name="moveDir">Direction + magnitude</param>
-  public void Move( Vector2 moveDir, bool hugWall )
+  public void Move( Vector2 moveDir, bool hugWall, bool jump )
   {
     int targetIndex = 0;
     Vector2 outputVelocity = Vector2.zero;
@@ -105,25 +112,87 @@ public class PlayerCharacterController : MonoBehaviour
           break;
         }
 
+        // Select desired wall -- closest angle towards input angle
         Vector2 vecToCollision = (m_WallsCollided[i].point - (Vector2)transform.position).normalized;
-        float dotToCollision = Vector2.Dot( transform.up, vecToCollision );
+        float dotToCollision = Vector2.Dot( moveDir, vecToCollision );
         if( dotToCollision > minDotProductToCollision )
         {
           minDotProductToCollision = dotToCollision;
           targetIndex = i;
         }
       }
-
+      
       if( m_WallsCollided[targetIndex].collider != m_formerCollider )
       {
         m_lastTimeSwitchedWalls = Time.time;
         m_formerCollider = m_WallsCollided[targetIndex].collider;
       }
 
-      Vector2 rayVector = (m_WallsCollided[targetIndex].point - (Vector2)transform.position).normalized;
+      // Calculate where we touch the wall
+      // Get a clean raycast directly through our feet to our target surface.
+      // Otherwise, the earlier CircleCast intersects ahead or behind our center point
+      // Do not do this if we have just switched surfaces and have yet to reorient our feet
+      // Fall back to the collision point from the earlier CircleCast
+      RaycastHit2D raycastToWall = m_WallsCollided[targetIndex];
+      bool reachedEdgeOfSurface = false;
+
+      if( Time.time - m_lastTimeSwitchedWalls > Mathf.Epsilon )
+      {
+        // ASSUMPTION: our facing is upright from surface, and is not lerping towards this
+        //RaycastHit2D rayToFeet = Physics2D.Raycast( transform.position, -transform.up, m_touchingWallRadius, m_WallLayers );
+
+        // NEW STRATEGY: out from the wall's normal
+        RaycastHit2D rayToFeet = Physics2D.Raycast( transform.position, -m_WallsCollided[targetIndex].normal, m_touchingWallRadius, m_WallLayers );
+
+
+        Debug.Log( "ray hit: distance = " + rayToFeet.distance + ", collider null? " + ( rayToFeet.collider == null ) +
+          ", direction of ray = " + -transform.right );
+        //Debug.Log( "old collider = " + m_WallsCollided[targetIndex].collider.gameObject.GetInstanceID() +
+        //  ", new collider = " + rayToFeet.collider.gameObject.GetInstanceID() );
+
+        if( rayToFeet.collider == m_WallsCollided[targetIndex].collider )
+        {
+          raycastToWall = rayToFeet;
+          Debug.Log( "rayCast success! vector = " + ( ( -transform.right - transform.position ) * m_touchingWallRadius ) +
+            ", impact point is " + rayToFeet.point );
+        }
+        
+        // Raycast from the foot on the leading edge of the direction we're moving,
+        // to check if we're moving over a slope
+        // The ray is distance-limited to restrict maximum slope transition (i.e., 90 degrees fails, period, length determines max angle)
+        bool movingRelativeLeft = Vector2.Dot( moveDir.normalized, transform.right) < 0f;
+        Vector3 footWorldPos;
+        if( movingRelativeLeft ) // cast from left foot
+        {
+          footWorldPos = transform.TransformPoint( m_leftFootRelativePos );
+        }
+        else // right foot
+        {
+          footWorldPos = transform.TransformPoint( new Vector3( -m_leftFootRelativePos.x, m_leftFootRelativePos.y, 0f ) );
+        }
+        RaycastHit2D footRay = Physics2D.Raycast( footWorldPos, -transform.up, m_maxSlopeAdjustDistance, m_WallLayers );
+
+        if( footRay.collider == null )
+        {
+          reachedEdgeOfSurface = true;
+          Debug.Log( "NO FOOT collider, footWorldPos = " + footWorldPos + ", footDir = " + -transform.right );
+        }
+        else
+        {
+          if( rayToFeet.collider == null )
+          {
+            raycastToWall = footRay;
+            Debug.Log( "switch to FOOT" );
+            Debug.Break();
+          }
+        }
+      }
+
+      Vector2 rayVector = (raycastToWall.point - (Vector2)transform.position).normalized;
+
       float dotToCollisionRay = Vector2.Dot( Quaternion.Euler(0f, 0f, -90f ) * moveDir.normalized, rayVector);
       float moveDirMagnitude = moveDir.magnitude;
-      Vector2 wallRight = Quaternion.Euler( 0f, 0f, 90f ) * m_WallsCollided[targetIndex].normal;
+      Vector2 wallRight = Quaternion.Euler( 0f, 0f, 90f ) * raycastToWall.normal;
 
       moveDirMagnitude = m_wallSlideInputScalar.Evaluate( dotToCollisionRay ) * moveDirMagnitude;
 
@@ -142,11 +211,41 @@ public class PlayerCharacterController : MonoBehaviour
 
       outputVelocity = currentVelocityAlongPlane + ( accelerationForce * GetReverseDirectionAccelerationBoost( moveDir ) );
 
-      // Cap at max velocity
+      if( reachedEdgeOfSurface )
+      {
+        outputVelocity = Vector2.zero;
+        m_Rigidbody2D.velocity = Vector2.zero;
+      }
+
+      // CAP VELOCITY at max
       outputVelocityMagnitude = Mathf.Min( outputVelocity.magnitude, m_MaxVelocityHuggingWall );
 
-      // Snap position to the wall
-      transform.position = m_WallsCollided[targetIndex].point + ( -rayVector * m_wallHugOffset );
+      // SNAP POSITION to the wall
+      Vector2 targetPosition = raycastToWall.point + ( -rayVector * m_wallHugOffset );
+      Debug.Log( "set position to " + targetPosition + 
+        ", collision point = " + raycastToWall.point + 
+        ", curPos = " + transform.position +
+        ", -rayVector * offset = " + (-rayVector * m_wallHugOffset ) );
+      transform.position = targetPosition;
+
+      // SET FACING
+      // When on a wall, always face with feet towards wall
+      // 
+      if( moveDir.sqrMagnitude > Mathf.Epsilon )
+      {
+        // DEBUG
+        Vector2 oldFacing = transform.up;
+
+        transform.up = raycastToWall.normal;
+
+        // DEBUG
+        float facingChangeDot = Vector2.Dot( oldFacing, transform.up);
+        if( facingChangeDot < 0.3 )
+        {
+          Debug.Log( "dot is " + facingChangeDot );
+          //Debug.Break();
+        }
+      }
     }
     else // add force from input direction
     {
@@ -156,6 +255,14 @@ public class PlayerCharacterController : MonoBehaviour
 
       // Cap at max velocity
       outputVelocityMagnitude = Mathf.Min( outputVelocity.magnitude, m_MaxVelocity );
+      
+      // SET FACING
+      // At the moment, we're snapping it to velocity every frame, not doing an animated lerp
+      // Change this if we have more robust character facing animation
+      if( moveDir.sqrMagnitude > Mathf.Epsilon )
+      {
+        transform.up = new Vector3( moveDir.x, moveDir.y, 0f );
+      }
     }
 
 
@@ -167,20 +274,15 @@ public class PlayerCharacterController : MonoBehaviour
     outputVelocity = outputVelocity.normalized * outputVelocityMagnitude;
 
     //Debug.Log( //"moveDir = " + moveDir +
-    //  ", accelerationForce = " + accelerationForce +
-    //  ", reverseDirectionAccelerationBoost = " + reverseDirectionAccelerationBoost +
-    //  ", angleDiff = " + angleDiff +
+    //  //", accelerationForce = " + accelerationForce +
+    //  //", reverseDirectionAccelerationBoost = " + reverseDirectionAccelerationBoost +
+    //  //", angleDiff = " + angleDiff +
     //  ", outputVelocity = " + outputVelocity +
     //  ", magnitude is " + outputVelocity.magnitude +
     //  ", friction = " + friction
     //  );
-
+    
     m_Rigidbody2D.velocity = outputVelocity;
-
-    if( m_Rigidbody2D.velocity.sqrMagnitude > Mathf.Epsilon )
-    {
-      transform.up = new Vector3( m_Rigidbody2D.velocity.x, m_Rigidbody2D.velocity.y, 0f );
-    }
 
     if( m_debug )
     {
@@ -233,6 +335,16 @@ public class PlayerCharacterController : MonoBehaviour
     // Draw the wall-check overlap sphere
     Gizmos.color = Color.magenta;
     Gizmos.DrawWireSphere( transform.position, m_touchingWallRadius );
+
+    // Draw the left, right foot raycast position
+    Gizmos.color = Color.green;
+    Vector3 leftFootWorldPos = transform.TransformPoint( m_leftFootRelativePos );
+    Gizmos.DrawWireSphere( leftFootWorldPos, 0.15f );
+    Gizmos.DrawLine( leftFootWorldPos, transform.TransformPoint( new Vector3( m_leftFootRelativePos.x, m_leftFootRelativePos.y + -.45f, 0f ) ) );
+
+    Vector3 rightFootWorldPos = transform.TransformPoint( new Vector3( -m_leftFootRelativePos.x, m_leftFootRelativePos.y, 0f ) );
+    Gizmos.DrawWireSphere( rightFootWorldPos, 0.15f );
+    Gizmos.DrawLine( rightFootWorldPos, transform.TransformPoint( new Vector3( -m_leftFootRelativePos.x, m_leftFootRelativePos.y + -.45f, 0f ) ) );
   }
 
 }
