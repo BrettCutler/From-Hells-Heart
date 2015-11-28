@@ -36,7 +36,7 @@ public class PlayerMoveControl : MonoBehaviour
 
     float hugWallRaw = Input.GetAxis( "HugWall" );
     m_hugWall = hugWallRaw > 0f;
-
+    
     m_CharacterController.Move( moveDir, m_hugWall, m_JumpedThisUpdate );
     m_JumpedThisUpdate = false;
   }

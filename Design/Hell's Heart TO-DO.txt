@@ -1,0 +1,17 @@
+Hell's Heart TO-DO
+====================
+PlayerCharacterController.cs
+------------------------------
+* When hugging wall:
+  * How to stop character moving when reach edge of wall?
+    - Currently, foot raycast isn't testing at fine-enough intervals to catch a player before they move off
+  * When transitioning planes, will sometimes appear on inverse side of next wall
+  * Do we still penetrate wall when first attaching?
+* Clean up nasty "Move" function
+
+
+Abilities
+----------
+* Move though wall when hugging
+* Shoot off a wall
+* Attack with melee!
